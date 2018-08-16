@@ -1,0 +1,500 @@
+---
+title: 'Winded to Winning: An Investigation of Fatigue Metrics of Rugby Players'
+author: "Steve Wilkins-Reeves with Ming-Chang Tsai"
+date: '2017-12-05'
+output:
+  html_document: default
+  word_document: default
+---
+## Introduction 
+How can one quantify fatigue, and can this be done with a continuous reserve model? The use of a continuous reserve model may allow for better planning on the use of players energy within a game.  This project will expand on the use of the ($D_{Bal}$) model and apply it to in competition data.  Previous papers discussed the application of the model to cyclists, however, this project will investigate this model applied to rugby players.[2,3]  This project seeks to answer the question.  Does the model predict when a player will in fact become fatigued? And how accurate are these predictions by this model? 
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(ROCR)
+```
+
+```{r include=FALSE}
+load(file = "ROC.rda")
+load(file = "dotdata.rda")
+load(file = "spagdata.rda")
+load(file = "HREIData.rda")
+load(file = "ModelParameters")
+load(file = "game1a.rda")
+load(file = "game2a.rda")
+load(file = "game3a.rda")
+load(file = "game4a.rda")
+load(file = "game5a.rda")
+load(file = "game6a.rda")
+load(file = "fullgame1.rda")
+load(file = "fullgame2.rda")
+load(file = "fullgame3.rda")
+load(file = "fullgame4.rda")
+load(file = "fullgame5.rda")
+load(file = "fullgame6.rda")
+load(file = "model1.rda")
+load(file = "model2.rda")
+load(file = "model3.rda")
+load(file = "model4.rda")
+load(file = "model5.rda")
+load(file = "model6.rda")
+
+```
+## Model 
+The parameters used in the model are defined as follows.  
+$$t' = \frac{D'}{S - CS}$$
+Where $t'$ is the time to expenditure, $S$ is the speed of an athlete, $CS$ is the speed they can continually maintain and $D'$ is the resulting anaerobic threshold (in units of m).  Previous papers use energy analogues to this model so the term energy will refer to $D'$ and other parameters with units of meters. 
+
+The model used in this project incorporates a recovery of the threshold.  It is based on the following assumptions: 1) the expenditure of the $D'$ begins the moment a subject exceeds $CS$, 2) the reconstitution of the $D'$ begins the moment the subject falls below $CS$, and 3) the reconstitution of the $D'$ follows a predictable exponential time course.  These assumptions can be summarized by the equation
+ $D_{Bal} = D' - \int_0^t \frac{dD_{exp}}{du}(u)e^{-\frac{(t - u)}{\tau_W}}du$ where $t$ is the time of observation, $u$ is the time at which energy was expanded, $\frac{dD_{exp}}{du}$ is the rate of anaerobic energy expended at any given time, $\tau_{W}$ is the recovery constant and $D_{bal}$ is the remaining threshold at any given point.[1] In previous work, linear regression has given the following in units of seconds $\tau_{W} = 546e^{-0.01(CS - S)} + 316$. [1]    
+
+## Defining Fatigue
+
+From the data collected by the Catapult GPS sensors, the parameter of Heart Rate Exertion Index is a measure of player exertion.  It is based on time spent with a heart rate within ranges near an athlete's maximum heart rate. 
+
+## Data
+Canadian Rugby team players were the subjects of interest for this data collection 
+The data is collected from Catapult GPS sensors which collect 88 variables of individual players over 6 games in a tournament. The variables of interest for this analysis being velocity, heart rate and time.  The data was collected at intervals of approximately 100Hz. 
+
+ 
+
+
+
+
+
+
+
+```{r include=FALSE}
+## Cleaning the Data
+## The average speed at each 100th of a second function 
+newaverage <- function(dataframe){
+    dataframe %>%
+      group_by(player, Time) %>%
+        summarize(Vel.Dpr. = mean(Vel.Dpr.), Heart.Rate = mean(Heart.Rate)) %>%
+          ungroup()
+}
+
+```
+
+
+```{r include=FALSE}
+# Time conversion to seconds
+timeconversiontosec <- function(time){
+  y <- rep(0,length(time))
+  for(i in 1:length(time)){
+    if(substr(time[i],1,1) == "6"){
+    
+      substr(time[i],1,1) <- "5"
+      y[i] <- ((as.numeric(as.POSIXct(paste("2017-01-01", paste0("0:",time[i])))) - 
+   as.numeric(as.POSIXct("2017-01-01 0:0:0")))) 
+      y[i] <- y[i] + 10*60
+      
+    }
+  
+    else if(substr(time[i],1,1) == "7"){
+    
+      substr(time[i],1,1) <- "5"
+      y[i] <- ((as.numeric(as.POSIXct(paste("2017-01-01", paste0("0:",time[i])))) - 
+   as.numeric(as.POSIXct("2017-01-01 0:0:0")))) 
+      y[i] <- y[i] + 20*60
+    }
+  
+    else if(substr(time[i],1,1) == "8"){
+    
+      substr(time[i],1,1) <- "5"
+      y[i] <- ((as.numeric(as.POSIXct(paste("2017-01-01", paste0("0:",time[i])))) - 
+   as.numeric(as.POSIXct("2017-01-01 0:0:0")))) 
+      y[i] <- y[i] + 30*60
+      
+    }
+  
+    else{
+   
+       y[i] <- (as.numeric(as.POSIXct(paste("2017-01-01", paste0("0:",time[i])))) - 
+   as.numeric(as.POSIXct("2017-01-01 0:0:0")))
+  
+    }
+  }
+  
+  
+  return(y)
+}
+
+
+
+```
+
+
+
+
+```{r include=FALSE}
+# Player 1 energy model data and simplifying data to just the time for each average
+fastmodel <- function(data, CS, Dprime){
+  
+  if(nrow(data) == 0){
+    return("N/A")
+  }
+  else{
+    newdata <- data
+    modelout <- data.table(Time = newdata$Time, v1avg = data$Vel.Dpr.)
+
+    Dbal <- Dprime
+
+    du = 0.1
+    tau <- (546*exp(-0.1*(CS - data$Vel.Dpr.)) + 316) ##Change this later this is the time constant for cyclists 
+    tauinv <- 1/tau
+    Dexp <- c()
+  for(i in 1:(length(data$Vel.Dpr.))){
+    speed <- data$Vel.Dpr.[i]
+  
+    if(speed >= CS){
+      expended <- (speed - CS)*du
+    } 
+    else{
+      expended <- 0
+    }
+  
+    Dexp <- c(Dexp,expended)
+  }
+
+  Dbal <- rep(0, length(data$Vel.Dpr.))
+  S <- rep(0,length(data$Vel.Dpr.))
+  for(N in 1:(length(data$Vel.Dpr.))){
+    if(N == 1){
+      S[N] <- 0
+      Dbal[N] <- Dprime - exp(-N*du*tauinv[N])*S[N]
+    }
+    else{
+      S[N] <- S[N-1] + Dexp[N]*exp(N*du*tauinv[N])
+      Dbal[N] <- Dprime - exp(-N*du*tauinv[N])*S[N]
+    }
+  }
+  out <- cbind(data, Dbal = Dbal, Time2 = timeconversiontosec(data$Time))
+
+  return(out)
+  }
+}
+```
+
+
+```{r include=FALSE}
+applymodel <- function(game, plr){
+  if(game == 1){
+    comp <- game1a
+  }
+  if(game == 2){
+    comp <- game2a
+  }
+  if(game == 3){
+    comp <- game3a
+  }
+  if(game == 4){
+    comp <- game4a
+  }
+  if(game == 5){
+    comp <- game5a
+  }
+  if(game == 6){
+    comp <- game6a
+  }  
+  comp <- comp[!comp$player != plr,]
+  comp <- comp[!is.na(comp$player) == TRUE,]
+
+  CS <- ModelParameters[plr,2]
+  Dprime <- ModelParameters[plr,3]
+  
+  Out <- fastmodel(comp,CS,Dprime)
+  
+  
+
+  return(Out)
+}
+```
+
+
+
+
+
+
+```{r include=FALSE}
+dotproduction <- function(threshold){
+  threshold <= 100
+  out <- data.table(Condition=character(), Energy=numeric())
+  for(game in 1:6){
+    if(game == 1){
+      model <- model1
+    }
+    if(game == 2){
+      model <- model2
+    }
+    if(game == 3){
+      model <- model3
+    }
+    if(game == 4){
+      model <- model4
+    }
+    if(game == 5){
+      model <- model5
+    }
+    if(game == 6){
+      model <- model6
+    }
+    
+    playerlist <- unique(model$player)
+    
+    for(plr in playerlist){
+      HRexertion <- HREIData[HREIData$Game == game,]
+      HRexertion <- HRexertion[HRexertion$Player == plr,]
+      HRexertion <- HRexertion[1,3]
+      HRex <- as.numeric(HRexertion)
+      currentmodel <- model[model$player == plr,]
+      lowbal <- min(currentmodel$Dbal)
+      
+    
+      if(HRex > threshold){
+        nextout <- data.table(Condition = "Fatigue", Energy = lowbal)
+      
+      }
+      else{
+        nextout <- data.table(Condition = "NonFatigue", Energy = lowbal)
+      }
+      out <- rbind(out,nextout)
+    
+    }
+    
+  }
+  return(out)
+}
+
+  
+```
+
+```{r include=FALSE}
+dotdiagram <- function(model){
+  playerlist <- unique(model$player)
+  out <- data.table(Condition = "test", Energy = 0)
+  out <- out[,0]  
+  for(plr in playerlist){
+    currentmodel <- model[model$player == plr,]
+    lowbal <- min(currentmodel$Dbal)
+    vavg <- mean(currentmodel$Vel.Dpr.)
+    hravg <- mean(currentmodel$Heart.Rate)
+    CS <- ModelParameters[player,2]
+    hrmax <- max(currentmodel$Heart.Rate)
+    
+    if((vavg < 1.5) & (hravg > 165)){
+      
+      nextout <- data.table(Condition = "Fatigue", Energy = lowbal)
+    }
+    else{
+      
+      nextout <- data.table(Condition = "NonFatigue", Energy = lowbal)
+    }
+    out <- rbind(out,nextout)
+  }
+  return(out)
+}
+
+```
+
+
+
+
+
+
+
+```{r include=FALSE}
+diffmax <- 0
+for(sep in 90:105){
+  dotdata <- dotproduction(sep)
+  summary <- dotdata %>%
+    group_by(Condition) %>%
+      summarize(Energy = mean(Energy)) %>%
+        ungroup()
+  
+  if(nrow(summary) == 2){
+    diff <- abs(summary[1,2] -  summary[2,2])
+    
+    if(diff > diffmax){
+      diffmax <- diff
+      sepmax <- sep
+    }
+
+  }
+  
+    
+
+}
+
+dotdata <- dotproduction(sepmax)
+
+
+```
+
+
+
+
+```{r include=FALSE}
+area <- 0
+lasttrue <- 0
+lastfalse <- 0
+for(i in 1:nrow(ROC)){
+  true <- ROC$TruePositive[i]
+  false <- ROC$FalsePositive[i]
+  if(true == lasttrue & true != 0){
+    area <- area + true*(false - lastfalse)
+  } 
+  
+  lasttrue <- ROC$TruePositive[i]
+  lastfalse <- ROC$FalsePositive[i]
+}
+
+area <- area + 1*(1 - lastfalse)
+area
+
+```
+
+Cleaning the data involved averaging over each 0.1 second interval.  Due to variance in the gathering of the data, there were between 9 and 11 readings in each displayed 0.1s interval.  Uniformity across sampling is necessary to apply the model.  So the measured quantities were averaged over each of the time intervals. 
+
+As heart rate is essentially tied to our definition of fatigue, it is noteworthy to display the heart rate of a player as a function of time in the game.
+
+```{r echo=FALSE}
+m1p1 <- model1[model1$player == 1,]
+timeoffset <- m1p1$Time2[1]
+m1p1$Time2 <- m1p1$Time2  - timeoffset
+
+hrplot <- ggplot(m1p1, aes(x=Time2, y=Heart.Rate)) +
+  geom_line(aes(group=1)) +
+   labs(x = "Time (s)", y = "Heart Rate (BPM)", title = "Heart Rate Over Time Player 1 Game 1")
+hrplot 
+``` 
+
+To determine the metric of $D_{Bal}$ in the model, the speed of an athlete throughout the game is used.  An example is shown below. 
+
+```{r echo=FALSE}
+
+velplot <- ggplot(m1p1, aes(x=Time2, y=Vel.Dpr.)) +
+  geom_line(aes(group=1)) +
+   labs(x = "Time (s)", y = "Speed (m/s)", title = "Speed Over Time")
+velplot 
+```
+
+
+## Statistical Methods
+
+Receiver operating characteristics were used for identifying whether or not an athlete was defined as fatigued.  ROC curves plot the rate of successful identification of true positives, against false positives.  First, true and false positives were separated by a threshold of the Heart Rate exertion index.  Above which would be identified as fatigued, and below of which would be identified as non-fatigued players. Next, an energy threshold will be applied to the minimum $D_{bal}$ achieved in a game, below of which are identified as fatigued and above are identified as non-fatigued players.  The true positive and false positive rates of each are identified and an ROC curve is established.  The area under the curve was then be used to assess the accuracy of using the $D_{Bal}$ model to predict fatigue.  
+
+## Results
+Applying the model to the data available for a particular athlete we have the following for $D_{bal}$.  
+
+```{r echo=FALSE}
+m1p1 <- model1[model1$player == 1,]
+timeoffset <- m1p1$Time2[1]
+m1p1$Time2 <- m1p1$Time2  - timeoffset
+dplotcon <- ggplot(m1p1, aes(x=Time2, y=Dbal)) +
+  geom_line(aes(group=1)) +  
+   labs(x = "Time (s)", y = "Distance Threshold Balance (Dbal (m))", title = "Anaerobic Balance Over Time Player 1 Game 1 (D' = 198 m, CS = 3.01 m/s)")
+dplotcon 
+```
+
+The following displays all players over game 1. 
+
+
+```{r echo=FALSE}
+spagplot <- ggplot(spagdata, aes(x=Time2, y=Dbal, group = factor(player), colour = factor(player))) +
+  geom_line() +  
+   labs(x = "Time (s)", y = "Distance Threshold Balance (Dbal (m))", title = "Spaghetti Plot for Game 1")
+spagplot
+```
+
+When maximizing the separation of the two groups a threshold of `r sepmax` m was found.  This gave the following distribution of minimum $D_{Bal}$ of Fatigued and Non-Fatigued players. 
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,error=FALSE}
+p<-ggplot(dotdata, aes(x=Condition, y=Energy)) + 
+  geom_dotplot(binaxis='y', stackdir='center') +
+   labs(y = "Min D_Bal", title = "Dot Diagram of Fatigued and Non-Fatigued States")
+ 
+
+p
+```
+
+```{r include=FALSE}
+summarymean <- dotdata %>%
+  group_by(Condition) %>%
+      summarize(Energy = mean(Energy)) %>%
+        ungroup()
+```
+
+```{r include=FALSE}
+summarysd <- dotdata %>%
+  group_by(Condition) %>%
+      summarize(Energy = sqrt(var(Energy))) %>%
+        ungroup()
+nf <- nrow(dotdata[dotdata$Condition == "Fatigue",])
+nnf <- nrow(dotdata[dotdata$Condition == "NonFatigue",])
+sf <- as.numeric(summarysd[1,2])
+snf <- as.numeric(summarysd[2,2])
+  
+errorf <- qt(0.975,df=nf-1)*sf/sqrt(nf)
+errornf <- qt(0.975,df=nnf-1)*snf/sqrt(nnf)
+```
+
+From this data we were able to construct an ROC curve for detecting the fatigue of a player.
+
+```{r echo=FALSE}
+q <- ggplot() +
+geom_step(data=ROC, mapping=aes(x=FalsePositive, y=TruePositive), direction="hv", linetype=1) +
+geom_point(data=ROC, mapping=aes(x=FalsePositive, y=TruePositive), color="red") +
+geom_line(data=ROC, mapping=aes(x=TruePositive, y=TruePositive), linetype=3)  +
+  ggtitle("ROC Curve For Fatigue Model")#+
+#opts(title="geom_step", plot.title=theme_text(size=40, vjust=1.5))
+q
+```
+
+This curve has an area of `r area`, indicating that this was a fair to poor indicator discriminating between fatigued and non-fatigued states as was defined.  
+
+
+
+## Limitations
+Some of the notable limitations of this project include: 
+
+1. The original model was based on aerobic athletes (cyclists).  Rugby players often are physiologically quite different and such a model may not be as valid. 
+
+2. Fatigue was defined based on a parameter of heart rate exertion.  This was based on the assumption that a more exerted athlete would be more fatigued, however this may not be the case for some particularily aerobically fit athletes.  Thus a more rigorous definition of fatigue would be useful.
+
+3. Despite the energy model being useful in other data such as cycling, there is no mechanistic determination of it.  There are likely many other factors which may be included in the model. 
+
+4. Games were played over multiple days, because of which, despite the model assuming a full recovery, an athlete may be more fatigued at a higher indicated $D_{Bal}$ in later games. 
+
+5. The recovery constant regression $\tau_{W}$ was based on a regression model from cyclists, and using a power output rather than a speed output, this may not be valid.  Recovery for rugby athletes may in fact be different than cyclists. 
+
+6. Three cases indicated a negative $D_{Bal}$.  This may in fact be a result of either added motivation in final games, or from a less than total anaerobic exertion in trials to establish CS and D'.  
+
+7. Not every player was tracked over each game.  
+
+
+
+## Conclusions
+We found that the the model was able to be applied to the player data with few minor issues.  Namely negative $D_{Bal}$ values for player 12 in game 4, and players 4 and 8 in game 6.  Since these are in later games this may be to an extra motivation in the final games of a series.   Using a separation of the threshold of the heart rate exertion index we found a fatigued group had minimum $D_{Bal}$ of `r round(as.numeric(summarymean[1,2]),2)` $\pm$ `r round(errorf,2)` and a non-fatigued group minimum $D_{Bal}$ of `r round(as.numeric(summarymean[2,2]),2)` $\pm$ `r round(errornf,2)` (95% CI).  An ROC curve was computed with an area of `r area` which indicates this is a fair to poor discriminator of fatigue of a player as defined by the heart rate exertion index.  
+
+## Future Work
+In future projects investigation into other definitions of fatigue are of interest.  Since this is a difficult quality to operationalize, many definitions may be of an option. Possibilities may include self reporting or more specific physiological measures of energy usage such as lactic acid buildup.  This however is not monitored by the Catapult GPS system.  Additionally an adapted model for more anaerobically dominant athletes.  Identifying a more accurate recovery constant would likely also be beneficial for the validity of the model.  Lastly, given a larger data set of multiple different tournament style competitions, the model may be adapted for multiple subsequent competitions.  All of these may improve the accuracy of such a model, and more reliable evidence on whether or not to accept this as a useful model for Rugby players.  
+
+## Bibliography
+
+[1] Skiba, Philip Friere, et al. "Modeling the expenditure and reconstitution of work capacity above critical power." Medicine and science in sports and exercise 44.8 (2012): 1526-1532.
+
+[2] Skiba, Philip F., et al. "Validation of a novel intermittent W′ model for cycling using field data." International journal of sports physiology and performance 9.6 (2014): 900-904.
+
+[3] Broxterman, Ryan M., et al. "W′ expenditure and reconstitution during severe intensity constant power exercise: mechanistic insight into the determinants of W′." Physiological reports 4.19 (2016): e12856.
+
+
